@@ -14,7 +14,8 @@ on:
         default: ""
     secrets:
       DOKPLOY_API_KEY:
-        required: true
+        description: "Dokploy API key (can be set as org secret)"
+        required: false
       APPLICATION_ID:
         required: true
 
