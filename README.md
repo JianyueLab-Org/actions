@@ -10,9 +10,9 @@ Runs format, typecheck, and build checks for Bun-based web projects.
 
 **Inputs**
 
-| Input | Required | Default | Description |
-|-------|----------|---------|-------------|
-| `bun-version` | No | `1.3` | Bun version to use |
+| Input         | Required | Default | Description        |
+| ------------- | -------- | ------- | ------------------ |
+| `bun-version` | No       | `1.3`   | Bun version to use |
 
 **Usage**
 
@@ -39,17 +39,17 @@ Deploys to [Dokploy](https://dokploy.com) and updates GitHub deployment status.
 
 **Inputs**
 
-| Input | Required | Default | Description |
-|-------|----------|---------|-------------|
-| `environment_url` | Yes | — | Public URL of the deployed environment |
-| `sha` | No | Triggering commit SHA | Commit SHA to associate with the deployment |
+| Input             | Required | Default               | Description                                 |
+| ----------------- | -------- | --------------------- | ------------------------------------------- |
+| `environment_url` | Yes      | —                     | Public URL of the deployed environment      |
+| `sha`             | No       | Triggering commit SHA | Commit SHA to associate with the deployment |
 
 **Secrets**
 
-| Secret | Required | Description |
-|--------|----------|-------------|
-| `DOKPLOY_API_KEY` | Yes | Dokploy API key |
-| `APPLICATION_ID` | Yes | Dokploy application ID for this project |
+| Secret            | Required | Description                             |
+| ----------------- | -------- | --------------------------------------- |
+| `DOKPLOY_API_KEY` | Yes      | Dokploy API key                         |
+| `APPLICATION_ID`  | Yes      | Dokploy application ID for this project |
 
 **Usage**
 

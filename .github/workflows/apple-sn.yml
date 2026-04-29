@@ -1,0 +1,257 @@
+# .github/workflows/macos-pkg-sign-notarize.yml
+#
+# Reusable workflow — macOS PKG signing, notarization, and stapling.
+#
+# Usage:
+#   jobs:
+#     pkg:
+#       uses: <org>/<repo>/.github/workflows/macos-pkg-sign-notarize.yml@main
+#       with:
+#         artifact-name: macos-bin-files
+#         bundle-id: com.yourcompany.yourapp
+#       secrets: inherit
+#
+name: macOS PKG Sign, Notarize, and Staple
+
+on:
+  workflow_call:
+    # -------------------------------------------------------------------------
+    # Inputs
+    # -------------------------------------------------------------------------
+    inputs:
+      artifact-name:
+        description: "Name of the GitHub Actions artifact containing the compiled macOS binaries."
+        required: true
+        type: string
+
+      artifact-path:
+        description: "Local path to download the artifact into."
+        required: false
+        type: string
+        default: "dist/"
+
+      bundle-id:
+        description: "Primary bundle identifier of the app (e.g. com.yourcompany.yourapp)."
+        required: true
+        type: string
+
+      pkg-output-name:
+        description: "File name for the final signed .pkg (no path, just the name)."
+        required: false
+        type: string
+        default: "app-signed.pkg"
+
+      codesign-script-path:
+        description: >
+          Path (relative to repo root) to the shell script that code-signs the
+          application files. The script receives the artifact directory as $1.
+          See: https://gist.github.com/GuillaumeFalourd/4efc73f1a6014b791c0ef223a023520a
+        required: false
+        type: string
+        default: "scripts/codesign.sh"
+
+      installer-script-path:
+        description: >
+          Path (relative to repo root) to the shell script that assembles the
+          .pkg from the signed files. Receives artifact dir as $1 and output
+          pkg path as $2.
+          See: https://github.com/KosalaHerath/macos-installer-builder
+        required: false
+        type: string
+        default: "scripts/build-pkg.sh"
+
+      upload-artifact:
+        description: "Whether to upload the final .pkg as a workflow artifact."
+        required: false
+        type: boolean
+        default: true
+
+      artifact-retention-days:
+        description: "Retention period (in days) for the uploaded PKG artifact."
+        required: false
+        type: number
+        default: 7
+
+    # -------------------------------------------------------------------------
+    # Secrets
+    # -------------------------------------------------------------------------
+    secrets:
+      DEVELOPER_ID_INSTALLER_CER:
+        description: "Base64-encoded Developer ID Installer certificate (.cer)."
+        required: true
+      DEVELOPER_ID_INSTALLER_KEY:
+        description: "Base64-encoded private key for the Installer certificate."
+        required: true
+      DEVELOPER_ID_APPLICATION_CER:
+        description: "Base64-encoded Developer ID Application certificate (.cer)."
+        required: true
+      DEVELOPER_ID_APPLICATION_KEY:
+        description: "Base64-encoded private key for the Application certificate."
+        required: true
+      KEY_PASSWORD:
+        description: "Password used to protect the private key files."
+        required: true
+      P12_PASSWORD:
+        description: "Password for the generated .p12 bundles."
+        required: true
+      KEYCHAIN_PASSWORD:
+        description: "Password for the temporary CI keychain."
+        required: true
+      DEVELOPER_ID_INSTALLER_NAME:
+        description: "Full identity name, e.g. 'Developer ID Installer: Your Company (TEAMID)'."
+        required: true
+      APPLE_ACCOUNT_USERNAME:
+        description: "Apple ID email address for notarization."
+        required: true
+      APPLE_ACCOUNT_PASSWORD:
+        description: "App-specific password for the Apple ID above."
+        required: true
+      APPLE_TEAM_ID:
+        description: "10-character Apple Developer Team ID."
+        required: true
+
+    # -------------------------------------------------------------------------
+    # Outputs
+    # -------------------------------------------------------------------------
+    outputs:
+      signed-pkg-name:
+        description: "File name of the signed, notarized, and stapled .pkg."
+        value: ${{ jobs.pkg.outputs.signed-pkg-name }}
+      signed-pkg-artifact:
+        description: "GitHub Actions artifact name for the signed .pkg (if upload-artifact is true)."
+        value: ${{ jobs.pkg.outputs.signed-pkg-artifact }}
+
+jobs:
+  pkg:
+    runs-on: macos-latest
+
+    outputs:
+      signed-pkg-name: ${{ steps.meta.outputs.signed-pkg-name }}
+      signed-pkg-artifact: ${{ steps.meta.outputs.signed-pkg-artifact }}
+
+    steps:
+      # -----------------------------------------------------------------------
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # -----------------------------------------------------------------------
+      - name: Download macOS binary artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.artifact-name }}
+          path: ${{ inputs.artifact-path }}
+
+      # -----------------------------------------------------------------------
+      - name: Set path metadata
+        id: meta
+        run: |
+          UNSIGNED_PKG="${RUNNER_TEMP}/unsigned.pkg"
+          SIGNED_PKG="${RUNNER_TEMP}/${{ inputs.pkg-output-name }}"
+          echo "unsigned-pkg=${UNSIGNED_PKG}"   >> "$GITHUB_OUTPUT"
+          echo "signed-pkg=${SIGNED_PKG}"       >> "$GITHUB_OUTPUT"
+          echo "signed-pkg-name=${{ inputs.pkg-output-name }}" >> "$GITHUB_OUTPUT"
+          echo "signed-pkg-artifact=macos-pkg-${{ inputs.pkg-output-name }}" >> "$GITHUB_OUTPUT"
+
+      # -----------------------------------------------------------------------
+      - name: Reconstruct certificate files
+        run: |
+          echo "${{ secrets.DEVELOPER_ID_INSTALLER_CER }}"   | base64 --decode > certificate_installer.cer
+          echo "${{ secrets.DEVELOPER_ID_INSTALLER_KEY }}"   | base64 --decode > certificate_installer.key
+          echo "${{ secrets.DEVELOPER_ID_APPLICATION_CER }}" | base64 --decode > certificate_application.cer
+          echo "${{ secrets.DEVELOPER_ID_APPLICATION_KEY }}" | base64 --decode > certificate_application.key
+
+      # -----------------------------------------------------------------------
+      - name: Create P12 bundles
+        run: |
+          openssl pkcs12 -export -name installer \
+            -in  certificate_installer.cer \
+            -inkey certificate_installer.key \
+            -passin  pass:"${{ secrets.KEY_PASSWORD }}" \
+            -out certificate_installer.p12 \
+            -passout pass:"${{ secrets.P12_PASSWORD }}"
+
+          openssl pkcs12 -export -name application \
+            -in  certificate_application.cer \
+            -inkey certificate_application.key \
+            -passin  pass:"${{ secrets.KEY_PASSWORD }}" \
+            -out certificate_application.p12 \
+            -passout pass:"${{ secrets.P12_PASSWORD }}"
+
+      # -----------------------------------------------------------------------
+      - name: Create and configure temporary keychain
+        run: |
+          KEYCHAIN_PATH="${RUNNER_TEMP}/app-signing.keychain-db"
+          echo "KEYCHAIN_PATH=${KEYCHAIN_PATH}" >> "$GITHUB_ENV"
+
+          security create-keychain -p "${{ secrets.KEYCHAIN_PASSWORD }}" "${KEYCHAIN_PATH}"
+          security set-keychain-settings -lut 21600 "${KEYCHAIN_PATH}"
+          security unlock-keychain   -p "${{ secrets.KEYCHAIN_PASSWORD }}" "${KEYCHAIN_PATH}"
+
+      # -----------------------------------------------------------------------
+      - name: Import certificates into keychain
+        run: |
+          security import certificate_installer.p12 \
+            -P "${{ secrets.P12_PASSWORD }}" -A -t cert -f pkcs12 -k "${KEYCHAIN_PATH}"
+
+          security import certificate_application.p12 \
+            -P "${{ secrets.P12_PASSWORD }}" -A -t cert -f pkcs12 -k "${KEYCHAIN_PATH}"
+
+          security list-keychain -d user -s "${KEYCHAIN_PATH}"
+
+      # -----------------------------------------------------------------------
+      - name: Codesign application files
+        run: |
+          bash "${{ inputs.codesign-script-path }}" "${{ inputs.artifact-path }}"
+
+      # -----------------------------------------------------------------------
+      - name: Build PKG from signed files
+        run: |
+          bash "${{ inputs.installer-script-path }}" \
+            "${{ inputs.artifact-path }}" \
+            "${{ steps.meta.outputs.unsigned-pkg }}"
+
+      # -----------------------------------------------------------------------
+      - name: Sign PKG with Developer ID Installer
+        run: |
+          productsign \
+            --sign "${{ secrets.DEVELOPER_ID_INSTALLER_NAME }}" \
+            "${{ steps.meta.outputs.unsigned-pkg }}" \
+            "${{ steps.meta.outputs.signed-pkg }}"
+
+      # -----------------------------------------------------------------------
+      - name: Notarize PKG
+        run: |
+          xcrun notarytool submit "${{ steps.meta.outputs.signed-pkg }}" \
+            --apple-id  "${{ secrets.APPLE_ACCOUNT_USERNAME }}" \
+            --password  "${{ secrets.APPLE_ACCOUNT_PASSWORD }}" \
+            --team-id   "${{ secrets.APPLE_TEAM_ID }}" \
+            --wait \
+            --timeout 30m
+
+      # -----------------------------------------------------------------------
+      - name: Staple notarization ticket
+        run: |
+          xcrun stapler staple "${{ steps.meta.outputs.signed-pkg }}"
+
+      # -----------------------------------------------------------------------
+      - name: Verify stapled PKG
+        run: |
+          spctl --assess --type install --verbose \
+            "${{ steps.meta.outputs.signed-pkg }}"
+
+      # -----------------------------------------------------------------------
+      - name: Upload signed PKG artifact
+        if: ${{ inputs.upload-artifact }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.meta.outputs.signed-pkg-artifact }}
+          path: ${{ steps.meta.outputs.signed-pkg }}
+          retention-days: ${{ inputs.artifact-retention-days }}
+
+      # -----------------------------------------------------------------------
+      - name: Clean up keychain and certificate files
+        if: always()
+        run: |
+          security delete-keychain "${KEYCHAIN_PATH}" || true
+          rm -f certificate_installer.cer  certificate_installer.key  certificate_installer.p12
+          rm -f certificate_application.cer certificate_application.key certificate_application.p12
