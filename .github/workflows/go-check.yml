@@ -1,0 +1,74 @@
+name: Go Check
+
+on:
+  workflow_call:
+    inputs:
+      go-version:
+        description: Go version to use
+        type: string
+        required: false
+        default: "1.24"
+      working-directory:
+        description: Working directory (for monorepos)
+        type: string
+        required: false
+        default: "."
+      run-tests:
+        description: Whether to run go test
+        type: boolean
+        required: false
+        default: true
+
+jobs:
+  go-check:
+    name: Go Check
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ inputs.go-version }}
+          cache-dependency-path: ${{ inputs.working-directory }}/go.sum
+
+      - name: Verify dependencies
+        run: go mod verify
+
+      - name: Check formatting
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "The following files are not formatted:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+          working-directory: ${{ inputs.working-directory }}
+
+      - name: Test
+        if: ${{ inputs.run-tests }}
+        run: go test -race -coverprofile=coverage.out ./...
+
+      - name: Upload coverage
+        if: ${{ inputs.run-tests }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: ${{ inputs.working-directory }}/coverage.out
+          retention-days: 7
