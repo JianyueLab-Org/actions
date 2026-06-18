@@ -29,7 +29,8 @@ on:
           OpenAI-compatible API base URL. The workflow POSTs to
           `${base-url}/chat/completions`. Examples:
           https://api.openai.com/v1, https://openrouter.ai/api/v1,
-          https://api.deepseek.com/v1.
+          https://api.deepseek.com/v1. The `AI_BASE_URL` secret, if set,
+          overrides this input (handy as an org-wide secret).
         required: false
         type: string
         default: "https://api.openai.com/v1"
@@ -78,6 +79,9 @@ on:
       AI_API_KEY:
         description: "API key (Bearer token) for the OpenAI-compatible endpoint."
         required: true
+      AI_BASE_URL:
+        description: "OpenAI-compatible base URL. If set, overrides the `base-url` input. Useful as an org-wide secret."
+        required: false
 
 permissions:
   contents: read
@@ -137,7 +141,8 @@ jobs:
         id: ai
         if: steps.diff.outputs.empty == 'false'
         env:
-          BASE_URL: ${{ inputs.base-url }}
+          INPUT_BASE_URL: ${{ inputs.base-url }}
+          SECRET_BASE_URL: ${{ secrets.AI_BASE_URL }}
           MODEL: ${{ inputs.model }}
           SYSTEM_PROMPT: ${{ inputs.system-prompt }}
           TEMPERATURE: ${{ inputs.temperature }}
@@ -145,6 +150,9 @@ jobs:
           PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
           set -euo pipefail
+
+          # The AI_BASE_URL secret wins over the base-url input when present.
+          BASE_URL="${SECRET_BASE_URL:-$INPUT_BASE_URL}"
 
           # Normalize base URL (strip a trailing slash) and build the endpoint.
           ENDPOINT="${BASE_URL%/}/chat/completions"

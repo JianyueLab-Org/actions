@@ -94,11 +94,14 @@ Reviews a pull request diff with any **OpenAI-compatible** Chat Completions API 
 
 **Secrets**
 
-| Secret       | Required | Description                                        |
-| ------------ | -------- | -------------------------------------------------- |
-| `AI_API_KEY` | Yes      | Bearer token for the OpenAI-compatible endpoint    |
+| Secret        | Required | Description                                                              |
+| ------------- | -------- | ------------------------------------------------------------------------ |
+| `AI_API_KEY`  | Yes      | Bearer token for the OpenAI-compatible endpoint                          |
+| `AI_BASE_URL` | No       | Base URL; overrides the `base-url` input. Handy as an org-wide secret    |
 
 **Usage**
+
+With `AI_API_KEY` and `AI_BASE_URL` set as **org secrets** (available to all repos), the caller is just:
 
 ```yaml
 # .github/workflows/review.yml
@@ -110,11 +113,20 @@ on:
 jobs:
   review:
     uses: JianyueLab-Org/actions/.github/workflows/ai-code-review.yml@main
+    secrets: inherit # passes the org's AI_API_KEY + AI_BASE_URL through
+```
+
+Or pass things explicitly (and override per-repo):
+
+```yaml
+jobs:
+  review:
+    uses: JianyueLab-Org/actions/.github/workflows/ai-code-review.yml@main
     with:
-      base-url: https://api.deepseek.com/v1
       model: deepseek-chat
     secrets:
       AI_API_KEY: ${{ secrets.AI_API_KEY }}
+      AI_BASE_URL: ${{ secrets.AI_BASE_URL }}
 ```
 
 ## Setup
