@@ -35,10 +35,10 @@ on:
         default: "https://api.openai.com/v1"
 
       model:
-        description: "Model id to use (e.g. gpt-4o, deepseek-chat, anthropic/claude-3.5-sonnet)."
+        description: "Model id to use (e.g. gpt-5.5, deepseek-chat, anthropic/claude-3.5-sonnet)."
         required: false
         type: string
-        default: "gpt-4o"
+        default: "gpt-5.5"
 
       system-prompt:
         description: "System prompt that sets the reviewer's role and rules."

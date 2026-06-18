@@ -86,7 +86,7 @@ Reviews a pull request diff with any **OpenAI-compatible** Chat Completions API 
 | Input            | Required | Default                     | Description                                                  |
 | ---------------- | -------- | --------------------------- | ------------------------------------------------------------ |
 | `base-url`       | No       | `https://api.openai.com/v1` | OpenAI-compatible API base URL (no trailing `/chat/completions`) |
-| `model`          | No       | `gpt-4o`                    | Model id to use                                              |
+| `model`          | No       | `gpt-5.5`                   | Model id to use                                              |
 | `system-prompt`  | No       | Built-in reviewer prompt    | Overrides the reviewer's role and rules                     |
 | `max-diff-bytes` | No       | `60000`                     | Max diff size sent to the model; larger diffs are truncated |
 | `temperature`    | No       | `0.2`                       | Sampling temperature                                        |
