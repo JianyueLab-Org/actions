@@ -1,0 +1,239 @@
+# .github/workflows/ai-code-review.yml
+#
+# Reusable workflow — AI code review for pull requests.
+#
+# Reviews the PR diff with any OpenAI-compatible Chat Completions API
+# (OpenAI, Azure OpenAI, OpenRouter, DeepSeek, Together, Groq, a local
+# vLLM/Ollama gateway, etc.) and posts the result as a PR comment.
+#
+# Usage:
+#   jobs:
+#     review:
+#       uses: JianyueLab-Org/actions/.github/workflows/ai-code-review.yml@main
+#       with:
+#         base-url: https://api.openai.com/v1
+#         model: gpt-4o
+#       secrets:
+#         AI_API_KEY: ${{ secrets.AI_API_KEY }}
+#
+name: AI Code Review
+
+on:
+  workflow_call:
+    # -------------------------------------------------------------------------
+    # Inputs
+    # -------------------------------------------------------------------------
+    inputs:
+      base-url:
+        description: >
+          OpenAI-compatible API base URL. The workflow POSTs to
+          `${base-url}/chat/completions`. Examples:
+          https://api.openai.com/v1, https://openrouter.ai/api/v1,
+          https://api.deepseek.com/v1.
+        required: false
+        type: string
+        default: "https://api.openai.com/v1"
+
+      model:
+        description: "Model id to use (e.g. gpt-4o, deepseek-chat, anthropic/claude-3.5-sonnet)."
+        required: false
+        type: string
+        default: "gpt-4o"
+
+      system-prompt:
+        description: "System prompt that sets the reviewer's role and rules."
+        required: false
+        type: string
+        default: >
+          You are a senior software engineer doing a focused code review of a
+          pull request diff. Report only concrete, actionable issues: bugs,
+          security problems, race conditions, broken edge cases, and clear
+          maintainability or performance concerns. Prefer a short list of
+          high-signal findings over nitpicks. For each finding give the file,
+          a brief explanation, and a suggested fix. If the diff looks good,
+          say so briefly. Use Markdown. Be concise.
+
+      max-diff-bytes:
+        description: "Maximum diff size (in bytes) to send to the model. Larger diffs are truncated."
+        required: false
+        type: number
+        default: 60000
+
+      temperature:
+        description: "Sampling temperature for the model."
+        required: false
+        type: number
+        default: 0.2
+
+      comment-tag:
+        description: "Hidden marker used to find and update the bot's previous comment instead of posting a new one."
+        required: false
+        type: string
+        default: "ai-code-review"
+
+    # -------------------------------------------------------------------------
+    # Secrets
+    # -------------------------------------------------------------------------
+    secrets:
+      AI_API_KEY:
+        description: "API key (Bearer token) for the OpenAI-compatible endpoint."
+        required: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      # -----------------------------------------------------------------------
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # -----------------------------------------------------------------------
+      - name: Compute PR diff
+        id: diff
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          MAX_BYTES: ${{ inputs.max-diff-bytes }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${BASE_SHA:-}" ] || [ -z "${HEAD_SHA:-}" ]; then
+            echo "::error::This workflow must be triggered by a pull_request event."
+            exit 1
+          fi
+
+          # Three-dot diff = changes on the PR branch relative to the merge base.
+          git diff --no-color "${BASE_SHA}...${HEAD_SHA}" -- . \
+            ':(exclude)**/*.lock' \
+            ':(exclude)**/*-lock.json' \
+            ':(exclude)**/*.lockb' \
+            ':(exclude)**/bun.lock' \
+            > full.diff || true
+
+          BYTES=$(wc -c < full.diff | tr -d ' ')
+          echo "diff is ${BYTES} bytes"
+
+          if [ "${BYTES}" -eq 0 ]; then
+            echo "empty=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "empty=false" >> "$GITHUB_OUTPUT"
+
+          if [ "${BYTES}" -gt "${MAX_BYTES}" ]; then
+            head -c "${MAX_BYTES}" full.diff > diff.txt
+            printf '\n\n[diff truncated at %s bytes of %s total]\n' "${MAX_BYTES}" "${BYTES}" >> diff.txt
+          else
+            cp full.diff diff.txt
+          fi
+
+      # -----------------------------------------------------------------------
+      - name: Request review from model
+        id: ai
+        if: steps.diff.outputs.empty == 'false'
+        env:
+          BASE_URL: ${{ inputs.base-url }}
+          MODEL: ${{ inputs.model }}
+          SYSTEM_PROMPT: ${{ inputs.system-prompt }}
+          TEMPERATURE: ${{ inputs.temperature }}
+          AI_API_KEY: ${{ secrets.AI_API_KEY }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          set -euo pipefail
+
+          # Normalize base URL (strip a trailing slash) and build the endpoint.
+          ENDPOINT="${BASE_URL%/}/chat/completions"
+
+          USER_PROMPT="Review this pull request titled \"${PR_TITLE}\".
+
+          Here is the unified diff:
+
+          \`\`\`diff
+          $(cat diff.txt)
+          \`\`\`"
+
+          # Build the request body with jq so the diff is safely JSON-encoded.
+          jq -n \
+            --arg model "$MODEL" \
+            --arg system "$SYSTEM_PROMPT" \
+            --arg user "$USER_PROMPT" \
+            --argjson temperature "$TEMPERATURE" \
+            '{
+              model: $model,
+              temperature: $temperature,
+              messages: [
+                { role: "system", content: $system },
+                { role: "user",   content: $user }
+              ]
+            }' > body.json
+
+          HTTP_CODE=$(curl -sS -w '%{http_code}' -o response.json \
+            -X POST "$ENDPOINT" \
+            -H "Authorization: Bearer ${AI_API_KEY}" \
+            -H "Content-Type: application/json" \
+            --data @body.json)
+
+          if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
+            echo "::error::API request to ${ENDPOINT} failed with HTTP ${HTTP_CODE}"
+            cat response.json
+            exit 1
+          fi
+
+          # Extract the assistant message; fail loudly if the shape is unexpected.
+          CONTENT=$(jq -r '.choices[0].message.content // empty' response.json)
+          if [ -z "$CONTENT" ]; then
+            echo "::error::Could not parse model response."
+            cat response.json
+            exit 1
+          fi
+
+          {
+            echo "review<<__AI_REVIEW_EOF__"
+            echo "$CONTENT"
+            echo "__AI_REVIEW_EOF__"
+          } >> "$GITHUB_OUTPUT"
+
+      # -----------------------------------------------------------------------
+      - name: Post or update PR comment
+        if: steps.diff.outputs.empty == 'false'
+        uses: actions/github-script@v7
+        env:
+          REVIEW: ${{ steps.ai.outputs.review }}
+          MODEL: ${{ inputs.model }}
+          COMMENT_TAG: ${{ inputs.comment-tag }}
+        with:
+          script: |
+            const marker = `<!-- ${process.env.COMMENT_TAG} -->`;
+            const body = [
+              marker,
+              "## 🤖 AI Code Review",
+              "",
+              process.env.REVIEW,
+              "",
+              `<sub>Model: \`${process.env.MODEL}\` · generated automatically. Use judgment — it can be wrong.</sub>`,
+            ].join("\n");
+
+            const { owner, repo } = context.repo;
+            const issue_number = context.payload.pull_request.number;
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner, repo, issue_number, per_page: 100,
+            });
+            const existing = comments.find(
+              (c) => c.user?.type === "Bot" && c.body?.includes(marker)
+            );
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner, repo, comment_id: existing.id, body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner, repo, issue_number, body,
+              });
+            }

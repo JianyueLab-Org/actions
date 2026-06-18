@@ -77,9 +77,53 @@ jobs:
       APPLICATION_ID: ${{ secrets.APPLICATION_ID }}
 ```
 
+### `ai-code-review.yml`
+
+Reviews a pull request diff with any **OpenAI-compatible** Chat Completions API and posts the result as a PR comment (updating its previous comment on each push). Works with OpenAI, Azure OpenAI, OpenRouter, DeepSeek, Groq, Together, or a self-hosted vLLM/Ollama gateway — anything that exposes `POST {base-url}/chat/completions`.
+
+**Inputs**
+
+| Input            | Required | Default                     | Description                                                  |
+| ---------------- | -------- | --------------------------- | ------------------------------------------------------------ |
+| `base-url`       | No       | `https://api.openai.com/v1` | OpenAI-compatible API base URL (no trailing `/chat/completions`) |
+| `model`          | No       | `gpt-4o`                    | Model id to use                                              |
+| `system-prompt`  | No       | Built-in reviewer prompt    | Overrides the reviewer's role and rules                     |
+| `max-diff-bytes` | No       | `60000`                     | Max diff size sent to the model; larger diffs are truncated |
+| `temperature`    | No       | `0.2`                       | Sampling temperature                                        |
+| `comment-tag`    | No       | `ai-code-review`            | Hidden marker used to update the bot's previous comment     |
+
+**Secrets**
+
+| Secret       | Required | Description                                        |
+| ------------ | -------- | -------------------------------------------------- |
+| `AI_API_KEY` | Yes      | Bearer token for the OpenAI-compatible endpoint    |
+
+**Usage**
+
+```yaml
+# .github/workflows/review.yml
+name: AI Review
+
+on:
+  pull_request:
+
+jobs:
+  review:
+    uses: JianyueLab-Org/actions/.github/workflows/ai-code-review.yml@main
+    with:
+      base-url: https://api.deepseek.com/v1
+      model: deepseek-chat
+    secrets:
+      AI_API_KEY: ${{ secrets.AI_API_KEY }}
+```
+
 ## Setup
 
 For each project that uses `deploy-dokploy.yml`, add the following secrets in **GitHub repo Settings → Secrets and variables → Actions**:
 
 - `DOKPLOY_API_KEY` — shared API key for Dokploy
 - `APPLICATION_ID` — the Dokploy application ID specific to this project
+
+For `ai-code-review.yml`, add one secret:
+
+- `AI_API_KEY` — Bearer token for your OpenAI-compatible endpoint
