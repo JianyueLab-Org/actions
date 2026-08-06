@@ -39,7 +39,7 @@ on:
         description: "Model id to use (e.g. gpt-5.5, deepseek-chat, anthropic/claude-3.5-sonnet)."
         required: false
         type: string
-        default: "gpt-5.5"
+        default: "gpt-5.6-sol"
 
       system-prompt:
         description: "System prompt that sets the reviewer's role and rules."
