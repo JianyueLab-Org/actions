@@ -44,6 +44,15 @@ jobs:
               ref: sha,
               environment: "production",
               required_contexts: [],
+              // 不让 GitHub 顺手合并。默认 auto_merge 为 true，意思是「如果
+              // 这个 ref 落后于默认分支，先把默认分支并进去」——而这里的 sha
+              // 来自 workflow_run.head_sha，等部署真的触发时 main 往往已经又
+              // 往前走了几个提交。于是 createDeployment 直接回 409
+              // "Conflict merging main into <sha>"，整个部署作业失败，而且失
+              // 败原因和被部署的代码毫无关系。
+              //
+              // 部署记录本来也不该导致一次合并。
+              auto_merge: false,
             });
             return String(deployment.data.id);
 
