@@ -65,13 +65,13 @@ on:
     secrets:
       KUBE_SERVER:
         description: "API server 地址"
-        required: true
+        required: false
       KUBE_CA:
         description: "API server 的 CA 证书，base64。入口用公开可信证书时留空"
         required: false
       KUBE_TOKEN:
-        description: "ServiceAccount token"
-        required: true
+        description: "Omni service account 凭据（不是 kubectl create token）"
+        required: false
 
 permissions:
   contents: read
@@ -128,6 +128,19 @@ jobs:
               auto_merge: false,
             });
             return String(deployment.data.id);
+
+      # 声明成 required: true 的 secret 一旦缺失，整个 run 会 startup_failure，
+      # 界面上只写「workflow file issue」，看不出是哪个 secret —— 所以改成在这
+      # 里显式检查，让失败说人话。
+      - name: Check cluster credentials
+        run: |
+          missing=""
+          [ -z "${{ secrets.KUBE_SERVER }}" ] && missing="$missing KUBE_SERVER"
+          [ -z "${{ secrets.KUBE_TOKEN }}" ]  && missing="$missing KUBE_TOKEN"
+          if [ -n "$missing" ]; then
+            echo "::error::缺少集群凭据:$missing（组织级 secret，或用 secrets: 显式传入）"
+            exit 1
+          fi
 
       - name: Configure kubectl
         run: |
