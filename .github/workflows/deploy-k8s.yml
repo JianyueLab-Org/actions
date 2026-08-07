@@ -11,22 +11,15 @@ name: Deploy Kubernetes
 # 关于集群凭据
 # ---------------------------------------------------------------------------
 #
-# 人用的 kubeconfig 走 Omni 的 OIDC（kubectl-oidc_login），要点浏览器，CI 里
-# 过不去。所以 CI 用一份自己的凭据。
+# 用 KUBECONFIG_B64：一份 base64 过的 kubeconfig，组织级 secret，和别的 JYL
+# 项目一致。整份 kubeconfig 比拆成 server/CA/token 三个 secret 省事，而且换集
+# 群入口时只动一个值。
 #
-# **注意 Kubernetes 的 ServiceAccount token 在这里不管用**，这一点实测过：
-# 集群的入口是 Omni 的代理（https://omni.jianyuelab.net:8100/），它只认 Omni
-# 自己的身份，拿 SA token 去打会被回
-# "You must be logged in to the server (the server has asked for the client to
-# provide credentials)" —— 连 RBAC 那一层都到不了。
+# 注意人手上那份 kubeconfig **不能直接拿来用**：它走 Omni 的 OIDC
+# （kubectl-oidc_login），要点浏览器。CI 那份得是非交互可用的凭据。
 #
-# 所以 KUBE_TOKEN 要的是 **Omni 的 service account**（`omnictl serviceaccount
-# create ci-deployer`，它会给出一份非交互可用的凭据），不是
-# `kubectl create token`。另一条路是让 CI 直接连真正的 kube-apiserver 而不走
-# Omni 代理，那样 SA token 才成立，但要那个地址对 GitHub runner 可达。
-#
-# KUBE_CA 是可选的：Omni 代理用的是公开可信证书，不需要额外的 CA。自建入口
-# 才需要。KUBE_SERVER / KUBE_TOKEN 建议设成组织级 secret。
+# GHCR_PULL_TOKEN 用来在目标 namespace 里建/更新 ghcr-pull —— 集群里已有的应
+# 用就是这么拉私有包的（见 llm-web 的 imagePullSecrets）。包是公开的话可以不设。
 
 on:
   workflow_call:
@@ -63,14 +56,11 @@ on:
         type: string
         default: "1.3"
     secrets:
-      KUBE_SERVER:
-        description: "API server 地址"
+      KUBECONFIG_B64:
+        description: "base64 编码的 kubeconfig（组织级 secret）"
         required: false
-      KUBE_CA:
-        description: "API server 的 CA 证书，base64。入口用公开可信证书时留空"
-        required: false
-      KUBE_TOKEN:
-        description: "Omni service account 凭据（不是 kubectl create token）"
+      GHCR_PULL_TOKEN:
+        description: "拉 GHCR 私有包用的 token，用来在 namespace 里建 ghcr-pull"
         required: false
 
 permissions:
@@ -132,30 +122,32 @@ jobs:
       # 声明成 required: true 的 secret 一旦缺失，整个 run 会 startup_failure，
       # 界面上只写「workflow file issue」，看不出是哪个 secret —— 所以改成在这
       # 里显式检查，让失败说人话。
+      # 声明成 required: true 的 secret 一旦缺失，整个 run 会 startup_failure，
+      # 界面上只写「workflow file issue」、日志一行都拿不到 —— 所以改成在这里
+      # 显式检查，让失败说人话。
       - name: Check cluster credentials
         run: |
-          missing=""
-          [ -z "${{ secrets.KUBE_SERVER }}" ] && missing="$missing KUBE_SERVER"
-          [ -z "${{ secrets.KUBE_TOKEN }}" ]  && missing="$missing KUBE_TOKEN"
-          if [ -n "$missing" ]; then
-            echo "::error::缺少集群凭据:$missing（组织级 secret，或用 secrets: 显式传入）"
+          if [ -z "${{ secrets.KUBECONFIG_B64 }}" ]; then
+            echo "::error::缺少 KUBECONFIG_B64（组织级 secret；注意 org secret 的可见性要包含本仓库）"
             exit 1
           fi
 
       - name: Configure kubectl
         run: |
           mkdir -p "$HOME/.kube"
-          if [ -n "${{ secrets.KUBE_CA }}" ]; then
-            echo "${{ secrets.KUBE_CA }}" | base64 -d > "$HOME/.kube/ca.crt"
-            kubectl config set-cluster jyl --server="${{ secrets.KUBE_SERVER }}" \
-              --certificate-authority="$HOME/.kube/ca.crt" --embed-certs=true
-          else
-            kubectl config set-cluster jyl --server="${{ secrets.KUBE_SERVER }}"
-          fi
-          kubectl config set-credentials ci --token="${{ secrets.KUBE_TOKEN }}"
-          kubectl config set-context jyl --cluster=jyl --user=ci \
-            --namespace="${{ inputs.namespace }}"
-          kubectl config use-context jyl
+          echo "${{ secrets.KUBECONFIG_B64 }}" | base64 -d > "$HOME/.kube/config"
+          chmod 600 "$HOME/.kube/config"
+          kubectl config current-context
+
+      # 私有包才需要。公开包设了也无害，只是多一个用不上的 secret。
+      - name: Ensure image pull secret
+        if: ${{ secrets.GHCR_PULL_TOKEN != '' }}
+        run: |
+          kubectl -n "${{ inputs.namespace }}" create secret docker-registry ghcr-pull \
+            --docker-server=ghcr.io \
+            --docker-username="${{ github.actor }}" \
+            --docker-password="${{ secrets.GHCR_PULL_TOKEN }}" \
+            --dry-run=client -o yaml | kubectl apply -f -
 
       # 先 apply 再换镜像：光 set image 要求 Deployment 已经存在，第一次部署
       # 或者 namespace 被删过之后就会直接失败。apply 是幂等的，两种情况一样走。
