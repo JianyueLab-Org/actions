@@ -1,0 +1,167 @@
+name: Deploy Kubernetes
+
+# 出镜像，然后滚一次 Deployment，并且和 deploy-dokploy.yml 一样留下一条
+# GitHub Deployment 记录。
+#
+# 为什么不复用 deploy-dokploy.yml：那边是把一个 application_id POST 给 Dokploy，
+# 由它去拉源码构建；这边的产物是一个镜像，部署动作是 `kubectl set image` +
+# 等 rollout。两者只有「留部署记录」这一段是一样的。
+#
+# ---------------------------------------------------------------------------
+# 关于集群凭据
+# ---------------------------------------------------------------------------
+#
+# 人用的 kubeconfig 走 Omni 的 OIDC（kubectl-oidc_login），要点浏览器，CI 里
+# 过不去。所以 CI **不复用人的那份**，而是用一个 ServiceAccount 的 token：权限
+# 只够动它自己那个 namespace 的 Deployment，泄露的后果被 RBAC 框死，而且吊销
+# 它不影响任何人的日常 kubectl。
+#
+# KUBE_SERVER / KUBE_CA / KUBE_TOKEN 建议设成组织级 secret，各仓库共用。
+
+on:
+  workflow_call:
+    inputs:
+      image:
+        description: "镜像名，不含 tag（例如 ghcr.io/jianyuelab-org/can-dev）"
+        required: true
+        type: string
+      namespace:
+        description: "Kubernetes namespace"
+        required: true
+        type: string
+      deployment:
+        description: "Deployment 名"
+        required: false
+        type: string
+        default: "app"
+      container:
+        description: "要换镜像的容器名"
+        required: false
+        type: string
+        default: "app"
+      environment_url:
+        description: "部署后的地址，写进 GitHub Deployment 记录"
+        required: true
+        type: string
+      bun-version:
+        required: false
+        type: string
+        default: "1.3"
+    secrets:
+      KUBE_SERVER:
+        description: "API server 地址"
+        required: true
+      KUBE_CA:
+        description: "API server 的 CA 证书，base64"
+        required: true
+      KUBE_TOKEN:
+        description: "ServiceAccount token"
+        required: true
+
+permissions:
+  contents: read
+  packages: write
+  deployments: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # 先跑一遍门禁再进 docker build —— 后者慢得多，格式或类型错了不必走到那步。
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ inputs.bun-version }}
+      - run: bun install --frozen-lockfile
+      - run: bun run lint
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          # sha 是回滚时唯一能指名道姓的东西；latest 只是给第一次 apply 用的
+          # 方便标签。集群里跑的永远是 sha 那个。
+          tags: |
+            ${{ inputs.image }}:${{ github.sha }}
+            ${{ inputs.image }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Create GitHub Deployment
+        id: deployment
+        uses: actions/github-script@v7
+        with:
+          result-encoding: string
+          script: |
+            const deployment = await github.rest.repos.createDeployment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: context.sha,
+              environment: "production",
+              required_contexts: [],
+              // 见 deploy-dokploy.yml 里同一行的注释：默认 true 会让 GitHub
+              // 先把默认分支并进来，ref 落后时直接 409。
+              auto_merge: false,
+            });
+            return String(deployment.data.id);
+
+      - name: Configure kubectl
+        run: |
+          mkdir -p "$HOME/.kube"
+          echo "${{ secrets.KUBE_CA }}" | base64 -d > "$HOME/.kube/ca.crt"
+          kubectl config set-cluster jyl \
+            --server="${{ secrets.KUBE_SERVER }}" \
+            --certificate-authority="$HOME/.kube/ca.crt" --embed-certs=true
+          kubectl config set-credentials ci --token="${{ secrets.KUBE_TOKEN }}"
+          kubectl config set-context jyl --cluster=jyl --user=ci \
+            --namespace="${{ inputs.namespace }}"
+          kubectl config use-context jyl
+
+      - name: Roll out
+        run: |
+          kubectl -n "${{ inputs.namespace }}" set image \
+            "deploy/${{ inputs.deployment }}" \
+            "${{ inputs.container }}=${{ inputs.image }}:${{ github.sha }}"
+          # --timeout 让「一直起不来」变成一次失败，而不是把 job 挂到超时。
+          kubectl -n "${{ inputs.namespace }}" rollout status \
+            "deploy/${{ inputs.deployment }}" --timeout=300s
+
+      - name: Update Deployment Status (Success)
+        if: success()
+        uses: actions/github-script@v7
+        env:
+          DEPLOYMENT_ID: ${{ steps.deployment.outputs.result }}
+          ENVIRONMENT_URL: ${{ inputs.environment_url }}
+        with:
+          script: |
+            await github.rest.repos.createDeploymentStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              deployment_id: Number(process.env.DEPLOYMENT_ID),
+              state: "success",
+              environment_url: process.env.ENVIRONMENT_URL,
+            });
+
+      - name: Update Deployment Status (Failed)
+        if: failure()
+        uses: actions/github-script@v7
+        env:
+          DEPLOYMENT_ID: ${{ steps.deployment.outputs.result }}
+        with:
+          script: |
+            if (!process.env.DEPLOYMENT_ID) return;
+            await github.rest.repos.createDeploymentStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              deployment_id: Number(process.env.DEPLOYMENT_ID),
+              state: "failure",
+            });
