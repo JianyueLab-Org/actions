@@ -12,11 +12,21 @@ name: Deploy Kubernetes
 # ---------------------------------------------------------------------------
 #
 # 人用的 kubeconfig 走 Omni 的 OIDC（kubectl-oidc_login），要点浏览器，CI 里
-# 过不去。所以 CI **不复用人的那份**，而是用一个 ServiceAccount 的 token：权限
-# 只够动它自己那个 namespace 的 Deployment，泄露的后果被 RBAC 框死，而且吊销
-# 它不影响任何人的日常 kubectl。
+# 过不去。所以 CI 用一份自己的凭据。
 #
-# KUBE_SERVER / KUBE_CA / KUBE_TOKEN 建议设成组织级 secret，各仓库共用。
+# **注意 Kubernetes 的 ServiceAccount token 在这里不管用**，这一点实测过：
+# 集群的入口是 Omni 的代理（https://omni.jianyuelab.net:8100/），它只认 Omni
+# 自己的身份，拿 SA token 去打会被回
+# "You must be logged in to the server (the server has asked for the client to
+# provide credentials)" —— 连 RBAC 那一层都到不了。
+#
+# 所以 KUBE_TOKEN 要的是 **Omni 的 service account**（`omnictl serviceaccount
+# create ci-deployer`，它会给出一份非交互可用的凭据），不是
+# `kubectl create token`。另一条路是让 CI 直接连真正的 kube-apiserver 而不走
+# Omni 代理，那样 SA token 才成立，但要那个地址对 GitHub runner 可达。
+#
+# KUBE_CA 是可选的：Omni 代理用的是公开可信证书，不需要额外的 CA。自建入口
+# 才需要。KUBE_SERVER / KUBE_TOKEN 建议设成组织级 secret。
 
 on:
   workflow_call:
@@ -52,8 +62,8 @@ on:
         description: "API server 地址"
         required: true
       KUBE_CA:
-        description: "API server 的 CA 证书，base64"
-        required: true
+        description: "API server 的 CA 证书，base64。入口用公开可信证书时留空"
+        required: false
       KUBE_TOKEN:
         description: "ServiceAccount token"
         required: true
@@ -117,10 +127,13 @@ jobs:
       - name: Configure kubectl
         run: |
           mkdir -p "$HOME/.kube"
-          echo "${{ secrets.KUBE_CA }}" | base64 -d > "$HOME/.kube/ca.crt"
-          kubectl config set-cluster jyl \
-            --server="${{ secrets.KUBE_SERVER }}" \
-            --certificate-authority="$HOME/.kube/ca.crt" --embed-certs=true
+          if [ -n "${{ secrets.KUBE_CA }}" ]; then
+            echo "${{ secrets.KUBE_CA }}" | base64 -d > "$HOME/.kube/ca.crt"
+            kubectl config set-cluster jyl --server="${{ secrets.KUBE_SERVER }}" \
+              --certificate-authority="$HOME/.kube/ca.crt" --embed-certs=true
+          else
+            kubectl config set-cluster jyl --server="${{ secrets.KUBE_SERVER }}"
+          fi
           kubectl config set-credentials ci --token="${{ secrets.KUBE_TOKEN }}"
           kubectl config set-context jyl --cluster=jyl --user=ci \
             --namespace="${{ inputs.namespace }}"
