@@ -53,6 +53,11 @@ on:
         description: "部署后的地址，写进 GitHub Deployment 记录"
         required: true
         type: string
+      manifest:
+        description: "先 apply 的清单路径。留空则只换镜像（要求资源已存在）"
+        required: false
+        type: string
+        default: ""
       bun-version:
         required: false
         type: string
@@ -138,6 +143,12 @@ jobs:
           kubectl config set-context jyl --cluster=jyl --user=ci \
             --namespace="${{ inputs.namespace }}"
           kubectl config use-context jyl
+
+      # 先 apply 再换镜像：光 set image 要求 Deployment 已经存在，第一次部署
+      # 或者 namespace 被删过之后就会直接失败。apply 是幂等的，两种情况一样走。
+      - name: Apply manifests
+        if: inputs.manifest != ''
+        run: kubectl apply -f "${{ inputs.manifest }}"
 
       - name: Roll out
         run: |
