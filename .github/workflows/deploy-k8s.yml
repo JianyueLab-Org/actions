@@ -55,6 +55,13 @@ on:
         required: false
         type: string
         default: "1.3"
+      fetch-depth:
+        description: >-
+          checkout 取多少个提交。默认 1（只要构建，历史用不上）。
+          构建产物依赖 git 历史时传 0 —— 见下面 checkout 那一步的注释。
+        required: false
+        type: number
+        default: 1
     secrets:
       KUBECONFIG_B64:
         description: "base64 编码的 kubeconfig（组织级 secret）"
@@ -72,7 +79,16 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
+      # 默认的 fetch-depth: 1 对绝大多数仓库是对的：构建只看工作区，多拉历史是白
+      # 花时间。但**产物里含 git 历史的站点**不一样 —— can-docs 的每篇文档在页脚
+      # 显示「最后更新」，那个时间戳是 VitePress 拿 `git log` 逐个文件问出来的。
+      # 浅克隆下仓库里只有一个提交，于是它不是拿不到日期，而是**拿到错的**：每一
+      # 页都显示本次部署的时间，一条几个月没动过的规章写着「今天更新」。
+      #
+      # 所以这里做成输入而不是直接改默认值：只有需要的仓库多付那一次全量 fetch。
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: ${{ inputs.fetch-depth }}
 
       # 先跑一遍门禁再进 docker build —— 后者慢得多，格式或类型错了不必走到那步。
       - uses: oven-sh/setup-bun@v2
