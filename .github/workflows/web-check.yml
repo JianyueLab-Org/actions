@@ -20,8 +20,18 @@ jobs:
         with:
           bun-version: ${{ inputs.bun-version }}
 
+      # can-ui 装在 GitHub Packages 上，而 GitHub 的 npm registry **即使是公开包
+      # 也要求带令牌** —— 这是 GitHub 的规矩。各站的 .npmrc 写的是
+      # `//npm.pkg.github.com/:_authToken=${GITHUB_TOKEN}`，那个变量在安装时才
+      # 从环境里读，所以必须在这里显式喂进去：Actions 不会自动把 GITHUB_TOKEN
+      # 放进 env。
+      #
+      # 缺了这一行的表现是 `bun install` 报 401，而不是「少了个环境变量」——
+      # 而且是六个站同时红，因为它们共用这份工作流。
       - name: Install dependencies
         run: bun install --frozen-lockfile
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Format check
         run: bunx prettier --check .
