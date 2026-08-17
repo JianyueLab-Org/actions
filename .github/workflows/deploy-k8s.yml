@@ -94,7 +94,17 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: ${{ inputs.bun-version }}
+      # can-ui 装在 GitHub Packages 上，而 GitHub 的 npm registry **即使是公开包
+      # 也要求带令牌** —— 这是 GitHub 的规矩。各站的 .npmrc 写的是
+      # `//npm.pkg.github.com/:_authToken=${GITHUB_TOKEN}`，那个变量在安装时才
+      # 从环境里读，所以必须在这里显式喂进去：Actions 不会自动把 GITHUB_TOKEN
+      # 放进 env。
+      #
+      # 缺了这一行的表现是 `bun install` 报 401，而不是「少了个环境变量」——
+      # 而且是六个站同时红，因为它们共用这份工作流。
       - run: bun install --frozen-lockfile
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - run: bun run lint
 
       - uses: docker/login-action@v3
@@ -116,6 +126,12 @@ jobs:
             ${{ inputs.image }}:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          # 容器里也要装依赖，而 build 阶段拿不到上面那个 env。用 BuildKit 的
+          # secret 挂载而不是 --build-arg：build-arg 会留在镜像的层历史里，
+          # `docker history` 就能读出来，等于把令牌焊进了一个推上 GHCR 的公开
+          # 镜像。secret 挂载只在那条 RUN 存在期间可见，不进层。
+          secrets: |
+            github_token=${{ secrets.GITHUB_TOKEN }}
 
       - name: Create GitHub Deployment
         id: deployment
