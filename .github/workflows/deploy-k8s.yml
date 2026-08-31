@@ -86,7 +86,7 @@ jobs:
       # 页都显示本次部署的时间，一条几个月没动过的规章写着「今天更新」。
       #
       # 所以这里做成输入而不是直接改默认值：只有需要的仓库多付那一次全量 fetch。
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: ${{ inputs.fetch-depth }}
 
