@@ -135,7 +135,7 @@ jobs:
 
       - name: Create GitHub Deployment
         id: deployment
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         with:
           result-encoding: string
           script: |
@@ -207,7 +207,7 @@ jobs:
 
       - name: Update Deployment Status (Success)
         if: success()
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         env:
           DEPLOYMENT_ID: ${{ steps.deployment.outputs.result }}
           ENVIRONMENT_URL: ${{ inputs.environment_url }}
@@ -223,7 +223,7 @@ jobs:
 
       - name: Update Deployment Status (Failed)
         if: failure()
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         env:
           DEPLOYMENT_ID: ${{ steps.deployment.outputs.result }}
         with:
