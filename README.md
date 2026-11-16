@@ -152,7 +152,7 @@ permissions:
 
 jobs:
   review:
-    uses: JianyueLab-Org/actions/.github/workflows/ai-code-review.yml@v27.1.0
+    uses: JianyueLab-Org/actions/.github/workflows/ai-code-review.yml@v27.1.1
     secrets: inherit
 ```
 
@@ -161,7 +161,7 @@ From another organization, forward the secrets explicitly:
 ```yaml
 jobs:
   review:
-    uses: JianyueLab-Org/actions/.github/workflows/ai-code-review.yml@v27.1.0
+    uses: JianyueLab-Org/actions/.github/workflows/ai-code-review.yml@v27.1.1
     with:
       fail-on-severity: critical
     secrets:
