@@ -2,6 +2,13 @@
 
 Reusable GitHub Actions workflows for JianyueLab projects.
 
+## Runners
+
+`web-check.yml`, `go-check.yml`, `deploy-dokploy.yml`, `deploy-k8s.yml` and `ai-code-review.yml` run on `ubuntu-latest` by default.
+A `runner` probe job runs first. When it cannot start, the work job runs on the caller organization's self-hosted runners (`self-hosted, linux, x64`).
+On self-hosted runners, `HOME` moves to `$RUNNER_TEMP/home`. `deploy-k8s.yml` writes the kubeconfig to `$RUNNER_TEMP`.
+`apple-sn.yml` stays on `macos-latest`; there is no macOS self-hosted runner.
+
 ## Workflows
 
 ### `web-check.yml`

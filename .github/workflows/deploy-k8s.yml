@@ -76,9 +76,28 @@ permissions:
   deployments: write
 
 jobs:
-  deploy:
+  # GitHub-hosted runner by default. When it cannot start, jobs run on the caller org's self-hosted runner.
+  runner:
     runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 5
+    permissions: {}
+    outputs:
+      hosted: ${{ steps.probe.outputs.hosted }}
     steps:
+      - id: probe
+        run: echo "hosted=true" >> "$GITHUB_OUTPUT"
+
+  deploy:
+    needs: runner
+    runs-on: ${{ needs.runner.outputs.hosted == 'true' && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64"]') }}
+    steps:
+      # Self-hosted runners on one host share a user; a per-job HOME keeps tool installs and registry logins apart.
+      - name: Isolate HOME on self-hosted runners
+        if: runner.environment == 'self-hosted'
+        run: |
+          mkdir -p "$RUNNER_TEMP/home"
+          echo "HOME=$RUNNER_TEMP/home" >> "$GITHUB_ENV"
       # 默认的 fetch-depth: 1 对绝大多数仓库是对的：构建只看工作区，多拉历史是白
       # 花时间。但**产物里含 git 历史的站点**不一样 —— can-docs 的每篇文档在页脚
       # 显示「最后更新」，那个时间戳是 VitePress 拿 `git log` 逐个文件问出来的。
@@ -125,7 +144,7 @@ jobs:
             ${{ inputs.image }}:${{ github.sha }}
             ${{ inputs.image }}:latest
           cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-to: type=gha,mode=max,ignore-error=true
           # 容器里也要装依赖，而 build 阶段拿不到上面那个 env。用 BuildKit 的
           # secret 挂载而不是 --build-arg：build-arg 会留在镜像的层历史里，
           # `docker history` 就能读出来，等于把令牌焊进了一个推上 GHCR 的公开
@@ -166,9 +185,10 @@ jobs:
 
       - name: Configure kubectl
         run: |
-          mkdir -p "$HOME/.kube"
-          echo "${{ secrets.KUBECONFIG_B64 }}" | base64 -d > "$HOME/.kube/config"
-          chmod 600 "$HOME/.kube/config"
+          echo "${{ secrets.KUBECONFIG_B64 }}" | base64 -d > "$RUNNER_TEMP/kubeconfig"
+          chmod 600 "$RUNNER_TEMP/kubeconfig"
+          echo "KUBECONFIG=$RUNNER_TEMP/kubeconfig" >> "$GITHUB_ENV"
+          export KUBECONFIG="$RUNNER_TEMP/kubeconfig"
           kubectl config current-context
 
       # 先 apply 再换镜像：光 set image 要求 Deployment 已经存在，第一次部署

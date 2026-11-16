@@ -142,13 +142,32 @@ permissions:
   pull-requests: write
 
 jobs:
-  review:
+  # GitHub-hosted runner by default. When it cannot start, jobs run on the caller org's self-hosted runner.
+  runner:
     runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 5
+    permissions: {}
+    outputs:
+      hosted: ${{ steps.probe.outputs.hosted }}
+    steps:
+      - id: probe
+        run: echo "hosted=true" >> "$GITHUB_OUTPUT"
+
+  review:
+    needs: runner
+    runs-on: ${{ needs.runner.outputs.hosted == 'true' && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64"]') }}
     timeout-minutes: 30
     concurrency:
       group: ai-code-review-${{ github.repository }}-${{ github.event.pull_request.number || github.run_id }}
       cancel-in-progress: true
     steps:
+      # Self-hosted runners on one host share a user; a per-job HOME keeps tool installs and logins apart.
+      - name: Isolate HOME on self-hosted runners
+        if: runner.environment == 'self-hosted'
+        run: |
+          mkdir -p "$RUNNER_TEMP/home"
+          echo "HOME=$RUNNER_TEMP/home" >> "$GITHUB_ENV"
       - name: Checkout
         if: github.event.pull_request
         uses: actions/checkout@v5
